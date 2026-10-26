@@ -1,0 +1,216 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RoleUtilisateur {
+  MEMBRE
+  MODERATEUR
+}
+
+enum StatutUtilisateur {
+  ACTIF
+  SUSPENDU
+}
+
+enum RareteTimbre {
+  COURANT
+  RECHERCHE
+  RARE
+}
+
+enum EtatTimbre {
+  NEUF
+  NEUF_SANS_GOMME
+  OBLITERE
+}
+
+enum StatutTimbre {
+  DISPONIBLE
+  EN_ATTENTE
+  RESERVE
+  EN_ECHANGE
+  SUSPENDU
+}
+
+enum FaceTimbre {
+  RECTO
+  VERSO
+}
+
+enum EtapeEchange {
+  EN_ATTENTE
+  ACCEPTE
+  TIMBRES_ENVOYES
+  TIMBRES_RECUS
+  EXPERTISE
+  VALIDE
+  RENVOI_CROISE
+  CONCLU
+  REFUSE
+  ANNULE
+  REJETE
+}
+
+enum SensEnvoi {
+  ALLER
+  RETOUR
+}
+
+enum ResultatExpertise {
+  CONFORME
+  NON_CONFORME
+}
+
+enum TypeNotification {
+  ECHANGE
+  MESSAGE
+  SYSTEME
+}
+
+model Utilisateur {
+  id                   String            @id @default(uuid()) @db.Uuid
+  prenom               String
+  nom                  String
+  email                String            @unique
+  motDePasseHash       String
+  ville                String
+  role                 RoleUtilisateur   @default(MEMBRE)
+  statut               StatutUtilisateur @default(ACTIF)
+  dateAcceptationChart DateTime
+  dateInscription      DateTime          @default(now())
+  timbres              Timbre[]
+  echangesProposes     Echange[]         @relation("EchangesProposes")
+  echangesRecus        Echange[]         @relation("EchangesRecus")
+  messages             Message[]
+  notifications        Notification[]
+}
+
+model Timbre {
+  id             String @id @default(uuid()) @db.Uuid
+  proprietaireId String @db.Uuid
+
+  titre              String
+  theme              String
+  pays               String
+  annee              Int
+  valeurFaciale      String
+  coteEstimee        Int
+  couleurImpression  String
+  rarete             RareteTimbre
+  etat               EtatTimbre
+  referenceCatalogue String?
+  statut             StatutTimbre @default(DISPONIBLE)
+  expertise          Boolean      @default(false)
+  version            Int          @default(1)
+  dateDepot          DateTime     @default(now())
+
+  proprietaire     Utilisateur   @relation(fields: [proprietaireId], references: [id])
+  photos           PhotoTimbre[]
+  echangesOfferts  Echange[]     @relation("TimbreOffert")
+  echangesDemandes Echange[]     @relation("TimbreDemande")
+  envois           Envoi[]
+  expertises       Expertise[]
+}
+
+model PhotoTimbre {
+  id           String     @id @default(uuid()) @db.Uuid
+  timbreId     String     @db.Uuid
+  face         FaceTimbre
+  chemin       String
+  typeMime     String
+  tailleOctets Int
+
+  timbre Timbre @relation(fields: [timbreId], references: [id])
+
+  @@unique([timbreId, face])
+}
+
+model Echange {
+  id              String @id @default(uuid()) @db.Uuid
+  proposantId     String @db.Uuid
+  destinataireId  String @db.Uuid
+  timbreOffertId  String @db.Uuid
+  timbreDemandeId String @db.Uuid
+
+  etape           EtapeEchange @default(EN_ATTENTE)
+  motifAnnulation String?
+  motifRejet      String?
+  dateCreation    DateTime     @default(now())
+  dateAcceptation DateTime?
+  dateLimiteEnvoi DateTime?
+  version         Int          @default(1)
+
+  proposant     Utilisateur    @relation("EchangesProposes", fields: [proposantId], references: [id])
+  destinataire  Utilisateur    @relation("EchangesRecus", fields: [destinataireId], references: [id])
+  timbreOffert  Timbre         @relation("TimbreOffert", fields: [timbreOffertId], references: [id])
+  timbreDemande Timbre         @relation("TimbreDemande", fields: [timbreDemandeId], references: [id])
+  envois        Envoi[]
+  expertises    Expertise[]
+  messages      Message[]
+  notifications Notification[]
+}
+
+model Envoi {
+  id            String    @id @default(uuid()) @db.Uuid
+  echangeId     String    @db.Uuid
+  timbreId      String    @db.Uuid
+  sens          SensEnvoi
+  numeroSuivi   String
+  dateEnvoi     DateTime
+  dateReception DateTime?
+  etatColis     String?
+
+  echange Echange @relation(fields: [echangeId], references: [id])
+  timbre  Timbre  @relation(fields: [timbreId], references: [id])
+}
+
+model Expertise {
+  id            String            @id @default(uuid()) @db.Uuid
+  echangeId     String            @db.Uuid
+  timbreId      String            @db.Uuid
+  resultat      ResultatExpertise
+  motif         String?
+  etatCorrige   EtatTimbre?
+  coteCorrigee  Int?
+  dateExpertise DateTime          @default(now())
+
+  echange Echange @relation(fields: [echangeId], references: [id])
+  timbre  Timbre  @relation(fields: [timbreId], references: [id])
+}
+
+model Message {
+  id          String    @id @default(uuid()) @db.Uuid
+  echangeId   String    @db.Uuid
+  auteurId    String    @db.Uuid
+  contenu     String
+  dateEnvoi   DateTime  @default(now())
+  dateLecture DateTime?
+  masque      Boolean   @default(false)
+
+  echange Echange     @relation(fields: [echangeId], references: [id])
+  auteur  Utilisateur @relation(fields: [auteurId], references: [id])
+}
+
+model Notification {
+  id            String           @id @default(uuid()) @db.Uuid
+  utilisateurId String           @db.Uuid
+  echangeId     String?          @db.Uuid
+  type          TypeNotification
+  titre         String
+  contenu       String
+  lue           Boolean          @default(false)
+  dateCreation  DateTime         @default(now())
+
+  utilisateur Utilisateur @relation(fields: [utilisateurId], references: [id])
+  echange     Echange?    @relation(fields: [echangeId], references: [id])
+}

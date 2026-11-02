@@ -19,6 +19,7 @@ export default defineEventHandler(async (event) => {
     }
 
     const files = await readMultipartFormData(event);
+    console.log(files);
 
     const recto = files?.find(
         (partie) => partie.name === "recto"

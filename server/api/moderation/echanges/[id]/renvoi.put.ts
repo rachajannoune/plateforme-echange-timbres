@@ -1,6 +1,6 @@
 import { prisma } from "../../../../utils/db";
 import { lireSession } from "../../../../utils/session";
-import { ResultatExpertise, EtapeEchange } from "../../../../../generated/prisma/enums";
+import {EtapeEchange } from "../../../../../generated/prisma/enums";
 
 
 export default defineEventHandler(async (event) => {

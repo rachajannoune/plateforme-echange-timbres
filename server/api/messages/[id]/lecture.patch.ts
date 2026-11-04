@@ -69,7 +69,8 @@ export default defineEventHandler(async (event) => {
             message: "Message introuvable.",
             details: null,
         };
-    } const echange = await prisma.echange.findUnique({
+    } 
+    const echange = await prisma.echange.findUnique({
         where: {
             id: message.echangeId,
         },

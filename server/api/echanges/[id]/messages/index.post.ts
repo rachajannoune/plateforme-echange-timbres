@@ -1,3 +1,4 @@
+import { EtapeEchange } from "~/generated/prisma/enums";
 import { prisma } from "../../../../utils/db";
 import { lireSession } from "../../../../utils/session";
 
@@ -88,7 +89,20 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
+    if (
+        echange.etape === EtapeEchange.CONCLU ||
+        echange.etape === EtapeEchange.ANNULE ||
+        echange.etape === EtapeEchange.REJETE ||
+        echange.etape === EtapeEchange.REFUSE
+    ) {
+        setResponseStatus(event, 400);
 
+        return {
+            code: 400,
+            message: "Cette conversation est en lecture seule.",
+            details: null,
+        };
+    }
     if (!contenu) {
         setResponseStatus(event, 400);
 

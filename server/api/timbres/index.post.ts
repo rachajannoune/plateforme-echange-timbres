@@ -1,25 +1,14 @@
 import { prisma } from "../../utils/db";
-import { lireSession } from "../../utils/session";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join, extname } from "node:path";
+import { exigerUtilisateurActif } from "../../utils/session";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export default defineEventHandler(async (event) => {
+    const utilisateur = await exigerUtilisateurActif(event);
 
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
 
     const files = await readMultipartFormData(event);
-    console.log(files);
 
     const recto = files?.find(
         (partie) => partie.name === "recto"
@@ -217,7 +206,10 @@ export default defineEventHandler(async (event) => {
 
     const tailleMax = 5 * 1024 * 1024;
 
+    // CORRECTION 1 : refuser les fichiers vides.
     if (
+        recto.data.length === 0 ||
+        verso.data.length === 0 ||
         recto.data.length > tailleMax ||
         verso.data.length > tailleMax
     ) {
@@ -225,26 +217,59 @@ export default defineEventHandler(async (event) => {
 
         return {
             code: 400,
-            message: "Chaque photo doit avoir une taille maximale de 5 Mo.",
+            message: "Chaque photo doit avoir une taille comprise entre 1 octet et 5 Mo.",
             details: null,
         };
     }
+    const typeMimeRecto = recto.type;
+    const typeMimeVerso = verso.type;
 
-    const timbre = await prisma.timbre.create({
-        data: {
-            proprietaireId: session,
-            titre,
-            theme,
-            pays,
-            annee,
-            valeurFaciale,
-            coteEstimee,
-            couleurImpression,
-            rarete: rarete as typeof raretesValides[number],
-            etat: etat as typeof etatsValides[number],
-            referenceCatalogue,
-        },
-    });
+    // CORRECTION 2 : vérifier le contenu réel des images.
+    function verifierImage(data: Buffer, type: string) {
+
+        if (type === "image/jpeg") {
+            return (
+                data.length >= 4 &&
+                data[0] === 0xff &&
+                data[1] === 0xd8 &&
+                data[2] === 0xff &&
+                data[data.length - 2] === 0xff &&
+                data[data.length - 1] === 0xd9
+            );
+        }
+
+        if (type === "image/png") {
+            return (
+                data.length >= 8 &&
+                data.subarray(0, 8).equals(
+                    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+                )
+            );
+        }
+
+        if (type === "image/webp") {
+            return (
+                data.length >= 12 &&
+                data.toString("ascii", 0, 4) === "RIFF" &&
+                data.toString("ascii", 8, 12) === "WEBP"
+            );
+        }
+
+        return false;
+    }
+
+    if (
+        !verifierImage(recto.data, recto.type) ||
+        !verifierImage(verso.data, verso.type)
+    ) {
+        setResponseStatus(event, 400);
+
+        return {
+            code: 400,
+            message: "Le contenu des photos est invalide.",
+            details: null,
+        };
+    }
 
     const dossierUploads = join(
         process.cwd(),
@@ -258,20 +283,18 @@ export default defineEventHandler(async (event) => {
     });
 
     const extensionRecto =
-        extname(recto.filename || "") ||
-        (recto.type === "image/png"
+        recto.type === "image/png"
             ? ".png"
             : recto.type === "image/webp"
                 ? ".webp"
-                : ".jpg");
+                : ".jpg";
 
     const extensionVerso =
-        extname(verso.filename || "") ||
-        (verso.type === "image/png"
+        verso.type === "image/png"
             ? ".png"
             : verso.type === "image/webp"
                 ? ".webp"
-                : ".jpg");
+                : ".jpg";
 
     const nomRecto =
         `${randomUUID()}-recto${extensionRecto}`;
@@ -279,15 +302,8 @@ export default defineEventHandler(async (event) => {
     const nomVerso =
         `${randomUUID()}-verso${extensionVerso}`;
 
-    await writeFile(
-        join(dossierUploads, nomRecto),
-        recto.data
-    );
-
-    await writeFile(
-        join(dossierUploads, nomVerso),
-        verso.data
-    );
+    const fichierRecto = join(dossierUploads, nomRecto);
+    const fichierVerso = join(dossierUploads, nomVerso);
 
     const cheminRecto =
         `/uploads/timbres/${nomRecto}`;
@@ -295,48 +311,90 @@ export default defineEventHandler(async (event) => {
     const cheminVerso =
         `/uploads/timbres/${nomVerso}`;
 
-    await prisma.photoTimbre.createMany({
-        data: [
-            {
-                timbreId: timbre.id,
-                face: "RECTO",
-                chemin: cheminRecto,
-                typeMime: recto.type,
-                tailleOctets: recto.data.length,
-            },
-            {
-                timbreId: timbre.id,
-                face: "VERSO",
-                chemin: cheminVerso,
-                typeMime: verso.type,
-                tailleOctets: verso.data.length,
-            },
-        ],
-    });
+    // CORRECTION 3 : nettoyer les fichiers si une erreur survient.
+    try {
 
-    const timbreCree =
-        await prisma.timbre.findUnique({
-            where: {
-                id: timbre.id,
-            },
-            include: {
-                photos: {
-                    select: {
-                        id: true,
-                        face: true,
-                        chemin: true,
-                        typeMime: true,
-                        tailleOctets: true,
+        await writeFile(
+            fichierRecto,
+            recto.data,
+            { flag: "wx" }
+        );
+
+        await writeFile(
+            fichierVerso,
+            verso.data,
+            { flag: "wx" }
+        );
+
+        // Créer le timbre et ses photos dans une transaction Prisma.
+        const timbreCree = await prisma.$transaction(async (tx) => {
+
+            const timbre = await tx.timbre.create({
+                data: {
+                    proprietaireId: utilisateur.id,
+                    titre,
+                    theme,
+                    pays,
+                    annee,
+                    valeurFaciale,
+                    coteEstimee,
+                    couleurImpression,
+                    rarete: rarete as typeof raretesValides[number],
+                    etat: etat as typeof etatsValides[number],
+                    referenceCatalogue,
+                },
+            });
+
+            await tx.photoTimbre.createMany({
+                data: [
+                    {
+                        timbreId: timbre.id,
+                        face: "RECTO",
+                        chemin: cheminRecto,
+                        typeMime: typeMimeRecto, 
+                        tailleOctets: recto.data.length,
+                    },
+                    {
+                        timbreId: timbre.id,
+                        face: "VERSO",
+                        chemin: cheminVerso,
+                        typeMime: typeMimeVerso,
+                        tailleOctets: verso.data.length,
+                    },
+                ],
+            });
+
+            return await tx.timbre.findUnique({
+                where: {
+                    id: timbre.id,
+                },
+                include: {
+                    photos: {
+                        select: {
+                            id: true,
+                            face: true,
+                            chemin: true,
+                            typeMime: true,
+                            tailleOctets: true,
+                        },
                     },
                 },
-            },
+            });
         });
 
-    setResponseStatus(event, 201);
+        setResponseStatus(event, 201);
 
-    return {
-        code: 201,
-        message: "Timbre ajouté avec succès.",
-        details: timbreCree,
-    };
+        return {
+            code: 201,
+            message: "Timbre ajouté avec succès.",
+            details: timbreCree,
+        };
+
+    } catch (erreur) {
+
+        await unlink(fichierRecto).catch(() => { });
+        await unlink(fichierVerso).catch(() => { });
+
+        throw erreur;
+    }
 });

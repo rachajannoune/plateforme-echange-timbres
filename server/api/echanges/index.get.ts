@@ -1,8 +1,8 @@
 import { prisma } from "../../utils/db";
-import { lireSession } from "../../utils/session";
+import { exigerUtilisateurActif } from "../../utils/session";
 
 export default defineEventHandler(async (event) => {
-    const session = lireSession(event);
+    const utilisateur = await exigerUtilisateurActif(event);
     const query = getQuery(event);
 
     const pageDemandee = Number(query.page);
@@ -20,15 +20,7 @@ export default defineEventHandler(async (event) => {
             : 10;
 
     const skip = (page - 1) * taille;
-    if (!session) {
-        setResponseStatus(event, 401);
 
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
 
     if (query.type !== "recues" && query.type !== "envoyees") {
         setResponseStatus(event, 400);
@@ -41,8 +33,8 @@ export default defineEventHandler(async (event) => {
     }
 
     const filtre = query.type === "recues"
-        ? { destinataireId: session }
-        : { proposantId: session };
+        ? { destinataireId: utilisateur.id }
+        : { proposantId: utilisateur.id };
 
     const echanges = await prisma.echange.findMany({
         where: filtre,
@@ -103,7 +95,7 @@ export default defineEventHandler(async (event) => {
                     messages: {
                         where: {
                             auteurId: {
-                                not: session,
+                                not: utilisateur.id,
                             },
                             dateLecture: null,
                             masque: false,
@@ -112,7 +104,10 @@ export default defineEventHandler(async (event) => {
                 },
             },
         },
+        orderBy: {
+            id: "desc",
 
+        },
         skip: skip,
         take: taille,
     });

@@ -1,5 +1,5 @@
 import { prisma } from "../../../utils/db";
-import { lireSession } from "../../../utils/session";
+import { exigerUtilisateurActif } from "../../../utils/session";
 
 export default defineEventHandler(async (event) => {
 
@@ -28,14 +28,15 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const session = lireSession(event);
+    const utilisateur = await exigerUtilisateurActif(event);
+    const session = utilisateur.id;
 
-    if (!session) {
-        setResponseStatus(event, 401);
+    if (utilisateur.role !== "MEMBRE") {
+        setResponseStatus(event, 403);
 
         return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
+            code: 403,
+            message: "Action réservée aux membres.",
             details: null,
         };
     }
@@ -104,10 +105,28 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
+    if (timbreOffert.proprietaireId !== findEchange.proposantId) {
+        setResponseStatus(event, 409);
 
+        return {
+            code: 409,
+            message: "Le timbre offert n'appartient plus au proposant.",
+            details: null,
+        };
+    }
+
+    if (timbreDemande.proprietaireId !== session) {
+        setResponseStatus(event, 409);
+
+        return {
+            code: 409,
+            message: "Le timbre demandé n'appartient plus au destinataire.",
+            details: null,
+        };
+    }
     if (
-        timbreDemande.statut === "RESERVE" ||
-        timbreDemande.statut === "EN_ECHANGE"
+        timbreDemande.statut !== "DISPONIBLE" &&
+        timbreDemande.statut !== "EN_ATTENTE"
     ) {
         setResponseStatus(event, 409);
 
@@ -137,9 +156,11 @@ export default defineEventHandler(async (event) => {
 
     const resultat = await prisma.$transaction(async (tx) => {
 
-        const echangeAccepte = await tx.echange.update({
+        const acceptation = await tx.echange.updateMany({
             where: {
                 id: identif,
+                destinataireId: session,
+                etape: "EN_ATTENTE"
             },
             data: {
                 etape: "ACCEPTE",
@@ -150,20 +171,55 @@ export default defineEventHandler(async (event) => {
                 },
             },
         });
-
-        await tx.timbre.updateMany({
+        if (acceptation.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Cette proposition ne peut plus être acceptée.",
+            });
+        }
+        const echangeAccepte = await tx.echange.findUniqueOrThrow({
             where: {
-                id: {
-                    in: [
-                        findEchange.timbreOffertId,
-                        findEchange.timbreDemandeId,
-                    ],
+                id: identif,
+            },
+        });
+
+        // 1. Vérifier que le timbre offert est toujours réservé.
+        // Si oui, le passer à EN_ECHANGE.
+        const timbreOffertModifie = await tx.timbre.updateMany({
+            where: {
+                id: findEchange.timbreOffertId,
+                statut: "RESERVE",
+            },
+            data: {
+                statut: "EN_ECHANGE",
+            },
+        });
+
+        // 2. Vérifier que le timbre demandé est encore disponible.
+        // Si oui, le passer à EN_ECHANGE.
+        const timbreDemandeModifie = await tx.timbre.updateMany({
+            where: {
+                id: findEchange.timbreDemandeId,
+                statut: {
+                    in: ["DISPONIBLE", "EN_ATTENTE"],
                 },
             },
             data: {
                 statut: "EN_ECHANGE",
             },
         });
+
+        // 3. Si un des deux timbres n'a pas été modifié,
+        // annuler toute la transaction pour éviter un échange incorrect.
+        if (
+            timbreOffertModifie.count !== 1 ||
+            timbreDemandeModifie.count !== 1
+        ) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Un des timbres n'est plus disponible pour cet échange.",
+            });
+        }
 
         const propositionsConcurrents =
             await tx.echange.findMany({
@@ -241,7 +297,7 @@ export default defineEventHandler(async (event) => {
                 titre: "Proposition acceptée",
                 contenu: "Votre proposition d'échange a été acceptée.",
             },
-        });
+        })
         return echangeAccepte;
     });
 

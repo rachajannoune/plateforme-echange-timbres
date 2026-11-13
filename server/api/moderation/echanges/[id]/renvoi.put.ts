@@ -1,11 +1,21 @@
 import { prisma } from "../../../../utils/db";
-import { lireSession } from "../../../../utils/session";
-import {EtapeEchange } from "../../../../../generated/prisma/enums";
+import { exigerUtilisateurActif } from "../../../../utils/session";
+import { EtapeEchange } from "../../../../../generated/prisma/enums";
 
 
 export default defineEventHandler(async (event) => {
     const identif = getRouterParam(event, "id");
     const body = await readBody(event);
+    if (!body || typeof body !== "object") {
+        setResponseStatus(event, 400);
+
+        return {
+            code: 400,
+            message: "Les informations  de renvoi sont obligatoires.",
+            details: null,
+        };
+
+    }
 
     const numeroSuiviOffert = body.numeroSuiviOffert
     const numeroSuiviDemande = body.numeroSuiviDemande
@@ -34,34 +44,7 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
-
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
+    const utilisateur = await exigerUtilisateurActif(event);
 
     if (utilisateur.role !== "MODERATEUR") {
         setResponseStatus(event, 403);
@@ -89,7 +72,9 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    if (echange.etape !== EtapeEchange.VALIDE) {
+    if (echange.etape !== EtapeEchange.VALIDE &&
+        echange.etape !== EtapeEchange.REJETE
+    ) {
         setResponseStatus(event, 400);
 
         return {
@@ -98,8 +83,7 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
-
-    if (!numeroSuiviDemande) {
+    if (typeof numeroSuiviDemande !== "string" || numeroSuiviDemande.trim() === "") {
         setResponseStatus(event, 400);
 
         return {
@@ -108,7 +92,7 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
-    if (!numeroSuiviOffert) {
+    if (typeof numeroSuiviOffert !== "string" || numeroSuiviOffert.trim() === "") {
         setResponseStatus(event, 400);
 
         return {
@@ -119,14 +103,33 @@ export default defineEventHandler(async (event) => {
     }
     const echangeMisAJour = await prisma.$transaction(
         async (tx) => {
+            const verification = await tx.echange.updateMany({
+                where: {
+                    id: identif,
+                    etape: {
+                        in: [EtapeEchange.VALIDE, EtapeEchange.REJETE]
+                    },
+                },
+                data: {
+                    version: {
+                        increment: 1,
+                    },
+                },
+            });
 
+            if (verification.count !== 1) {
+                throw createError({
+                    statusCode: 409,
+                    statusMessage: "Le renvoi a déjà été enregistré ou n'est plus autorisé.",
+                });
+            }
             await tx.envoi.createMany({
                 data: [
                     {
                         echangeId: identif,
                         timbreId: echange.timbreOffertId,
                         sens: "RETOUR",
-                        numeroSuivi: numeroSuiviOffert,
+                        numeroSuivi: numeroSuiviOffert.trim(),
                         dateEnvoi: new Date(),
                     },
 
@@ -134,32 +137,51 @@ export default defineEventHandler(async (event) => {
                         echangeId: identif,
                         timbreId: echange.timbreDemandeId,
                         sens: "RETOUR",
-                        numeroSuivi: numeroSuiviDemande,
+                        numeroSuivi: numeroSuiviDemande.trim(),
                         dateEnvoi: new Date(),
                     },
                 ],
             });
 
-            await tx.timbre.update({
-                where: {
-                    id: echange.timbreDemandeId,
-                },
-                data: {
-                    proprietaireId: echange.proposantId,
-                    statut: "DISPONIBLE",
-                },
-            });
+            if (echange.etape === EtapeEchange.VALIDE) {
+                await tx.timbre.update({
+                    where: {
+                        id: echange.timbreDemandeId,
+                    },
+                    data: {
+                        proprietaireId: echange.proposantId,
+                        statut: "DISPONIBLE",
+                    },
+                });
 
-            await tx.timbre.update({
-                where: {
-                    id: echange.timbreOffertId,
-                },
-                data: {
-                    proprietaireId: echange.destinataireId,
-                    statut: "DISPONIBLE",
-                },
-            });
+                await tx.timbre.update({
+                    where: {
+                        id: echange.timbreOffertId,
+                    },
+                    data: {
+                        proprietaireId: echange.destinataireId,
+                        statut: "DISPONIBLE",
+                    },
+                });
+            }
 
+
+            if (echange.etape === EtapeEchange.REJETE) {
+                await tx.timbre.updateMany({
+                    where: {
+                        id: {
+                            in: [
+                                echange.timbreOffertId,
+                                echange.timbreDemandeId,
+                            ],
+                        },
+                        statut: "EN_ECHANGE",
+                    },
+                    data: {
+                        statut: "DISPONIBLE",
+                    },
+                });
+            }
             return await tx.echange.update({
                 where: {
                     id: identif,

@@ -1,7 +1,9 @@
 import { prisma } from "../../../utils/db";
-import { lireSession } from "../../../utils/session";
+import { exigerUtilisateurActif } from "../../../utils/session";
 
 export default defineEventHandler(async (event) => {
+    const user = await exigerUtilisateurActif(event);
+
     const identif = getRouterParam(event, "id");
 
     if (!identif) {
@@ -9,7 +11,7 @@ export default defineEventHandler(async (event) => {
 
         return {
             code: 400,
-            message: "Identifiant de l'échange manquant.",
+            message: "Identifiant du message manquant.",
             details: null,
         };
     }
@@ -24,35 +26,7 @@ export default defineEventHandler(async (event) => {
 
         return {
             code: 400,
-            message: "Identifiant de l'échange invalide.",
-            details: null,
-        };
-    }
-
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
+            message: "Identifiant du message invalide.",
             details: null,
         };
     }
@@ -69,7 +43,7 @@ export default defineEventHandler(async (event) => {
             message: "Message introuvable.",
             details: null,
         };
-    } 
+    }
     const echange = await prisma.echange.findUnique({
         where: {
             id: message.echangeId,
@@ -86,14 +60,14 @@ export default defineEventHandler(async (event) => {
         };
     }
     if (
-        session !== echange.proposantId &&
-        session !== echange.destinataireId
+        user.id !== echange.proposantId &&
+        user.id !== echange.destinataireId
     ) {
         setResponseStatus(event, 403);
 
         return {
             code: 403,
-            message:"Vous n'êtes pas autorisé à modifier ce message.",
+            message: "Vous n'êtes pas autorisé à modifier ce message.",
             details: null,
         };
     }
@@ -106,12 +80,30 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
-    const messageMisAJour = await prisma.message.update({
+    
+    const modification = await prisma.message.updateMany({
         where: {
             id: identif,
+            dateLecture: null,
         },
         data: {
             dateLecture: new Date(),
+        },
+    });
+
+    if (modification.count !== 1) {
+        setResponseStatus(event, 409);
+
+        return {
+            code: 409,
+            message: "Ce message a déjà été marqué comme lu.",
+            details: null,
+        };
+    }
+
+    const messageMisAJour = await prisma.message.findUnique({
+        where: {
+            id: identif,
         },
     });
     return {

@@ -14,8 +14,8 @@ export default defineEventHandler(async (event) => {
 
     const taille =
         Number.isInteger(tailleDemandee) &&
-        tailleDemandee > 0 &&
-        tailleDemandee <= 50
+            tailleDemandee > 0 &&
+            tailleDemandee <= 50
             ? tailleDemandee
             : 10;
 
@@ -101,7 +101,9 @@ export default defineEventHandler(async (event) => {
                 },
             },
         },
-
+        orderBy: {
+            id: "desc",
+        },
         skip: skip,
         take: taille,
     });

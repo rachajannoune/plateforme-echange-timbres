@@ -1,7 +1,9 @@
 import { prisma } from "../../../../utils/db";
-import { lireSession } from "../../../../utils/session";
+import { exigerUtilisateurActif } from "../../../../utils/session";
 
 export default defineEventHandler(async (event) => {
+    const utilisateur = await exigerUtilisateurActif(event);
+
     const identif = getRouterParam(event, "id");
     if (!identif) {
         setResponseStatus(event, 400);
@@ -28,33 +30,7 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const session = lireSession(event);
 
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
     const echange = await prisma.echange.findUnique({
         where: {
             id: identif,
@@ -72,8 +48,8 @@ export default defineEventHandler(async (event) => {
     }
 
     if (
-        session !== echange.proposantId &&
-        session !== echange.destinataireId
+        utilisateur.id !== echange.proposantId &&
+        utilisateur.id !== echange.destinataireId
     ) {
         setResponseStatus(event, 403);
 

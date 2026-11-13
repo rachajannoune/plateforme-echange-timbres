@@ -1,37 +1,12 @@
 import { prisma } from "../../utils/db";
-import { lireSession } from "../../utils/session";
+import { exigerUtilisateurActif } from "../../utils/session";
 
 export default defineEventHandler(async (event) => {
-    const session = lireSession(event);
+    const utilisateur = await exigerUtilisateurActif(event);
 
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
     const listeNotifications = await prisma.notification.findMany({
         where: {
-            utilisateurId: session,
+            utilisateurId: utilisateur.id,
         },
         orderBy: {
             dateCreation: "desc",

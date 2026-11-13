@@ -1,12 +1,21 @@
 import { prisma } from "../../../../utils/db";
-import { lireSession } from "../../../../utils/session";
+import { exigerUtilisateurActif } from "../../../../utils/session";
 import { ResultatExpertise, EtapeEchange } from "../../../../../generated/prisma/enums";
 
 
 export default defineEventHandler(async (event) => {
     const identif = getRouterParam(event, "id");
     const body = await readBody(event);
+    if (!body || typeof body !== "object") {
+        setResponseStatus(event, 400);
 
+        return {
+            code: 400,
+            message: "Les informations  de lexpertise sont obligatoires.",
+            details: null,
+        };
+
+    }
 
     const resultatOffert = body.resultatOffert;
     const resultatDemande = body.resultatDemande;
@@ -41,34 +50,8 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
+    const utilisateur = await exigerUtilisateurActif(event);
 
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
 
     if (utilisateur.role !== "MODERATEUR") {
         setResponseStatus(event, 403);
@@ -134,7 +117,7 @@ export default defineEventHandler(async (event) => {
     if (
         (resultatDemande === ResultatExpertise.NON_CONFORME ||
             resultatOffert === ResultatExpertise.NON_CONFORME) &&
-        !motif
+        (typeof motif !== "string" || motif.trim() === "")
     ) {
         setResponseStatus(event, 400);
 
@@ -149,9 +132,28 @@ export default defineEventHandler(async (event) => {
             resultatDemande === ResultatExpertise.CONFORME
             ? EtapeEchange.VALIDE
             : EtapeEchange.REJETE;
+
+
     const echangeMisAJour = await prisma.$transaction(
         async (tx) => {
+            const verification = await tx.echange.updateMany({
+                where: {
+                    id: identif,
+                    etape: EtapeEchange.TIMBRES_RECUS,
+                },
+                data: {
+                    version: {
+                        increment: 1,
+                    },
+                },
+            });
 
+            if (verification.count !== 1) {
+                throw createError({
+                    statusCode: 409,
+                    statusMessage: "Cet échange a déjà été expertisé ou n'est plus disponible.",
+                });
+            }
             await tx.expertise.createMany({
                 data: [
                     {

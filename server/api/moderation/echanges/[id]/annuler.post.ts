@@ -1,12 +1,12 @@
 import { prisma } from "../../../../utils/db";
-import { lireSession } from "../../../../utils/session";
+import { exigerUtilisateurActif } from "../../../../utils/session";
 import { EtapeEchange } from "../../../../../generated/prisma/enums";
 
-
 export default defineEventHandler(async (event) => {
+
     const identif = getRouterParam(event, "id");
     const body = await readBody(event);
-    const motifannulation = body.motif;
+    const motifannulation = body?.motif;
 
     if (!identif) {
         setResponseStatus(event, 400);
@@ -19,9 +19,7 @@ export default defineEventHandler(async (event) => {
     }
 
     const uuidValide =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-            identif,
-        );
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identif);
 
     if (!uuidValide) {
         setResponseStatus(event, 400);
@@ -33,33 +31,7 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
+    const utilisateur = await exigerUtilisateurActif(event);
 
     if (utilisateur.role !== "MODERATEUR") {
         setResponseStatus(event, 403);
@@ -86,22 +58,24 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
+
     if (
-        EtapeEchange.ACCEPTE&&
-        EtapeEchange.TIMBRES_ENVOYES &&
-        EtapeEchange.TIMBRES_RECUS &&
-        EtapeEchange.VALIDE
+        echange.etape !== EtapeEchange.EN_ATTENTE &&
+        echange.etape !== EtapeEchange.ACCEPTE
     ) {
-        setResponseStatus(event, 400);
+        setResponseStatus(event, 409);
 
         return {
-            code: 400,
-            message: "Cet échange ne peut pas être annulé.",
+            code: 409,
+            message: "Cet échange ne peut pas être annulé par cette procédure.",
             details: null,
         };
     }
 
-    if (!motifannulation) {
+    if (
+        typeof motifannulation !== "string" ||
+        motifannulation.trim() === ""
+    ) {
         setResponseStatus(event, 400);
 
         return {
@@ -110,43 +84,141 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
-    const echangeMisAJour = await prisma.$transaction(
-        async (tx) => {
 
-            await tx.timbre.update({
-                where: {
-                    id: echange.timbreDemandeId,
+    const echangeMisAJour = await prisma.$transaction(async (tx) => {
+
+        // Protéger l'annulation contre deux actions simultanées.
+        const verification = await tx.echange.updateMany({
+            where: {
+                id: identif,
+                etape: {
+                    in: [
+                        EtapeEchange.EN_ATTENTE,
+                        EtapeEchange.ACCEPTE,
+                    ],
                 },
-                data: {
-                    statut: "DISPONIBLE",
+            },
+            data: {
+                version: {
+                    increment: 1,
                 },
+            },
+        });
+
+        if (verification.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Cet échange ne peut plus être annulé.",
             });
+        }
 
-            await tx.timbre.update({
+        // Récupérer les envois déclarés pour cet échange.
+        const envois = await tx.envoi.findMany({
+            where: {
+                echangeId: identif,
+                sens: "ALLER",
+            },
+        });
+
+        if (envois.length >= 2) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Les deux colis ont déjà été envoyés.",
+            });
+        }
+
+        // Vérifier le délai lorsqu'un seul colis a été envoyé.
+        if (envois.length === 1) {
+
+            const dateActuelle = new Date();
+
+            if (
+                !echange.dateLimiteEnvoi ||
+                dateActuelle.getTime() <= echange.dateLimiteEnvoi.getTime()
+            ) {
+                throw createError({
+                    statusCode: 409,
+                    statusMessage: "Le délai d'envoi n'est pas encore dépassé.",
+                });
+            }
+        }
+
+        // Identifier le timbre envoyé.
+        let offertEnvoye = false;
+        let demandeEnvoye = false;
+
+        for (const envoi of envois) {
+
+            if (envoi.timbreId === echange.timbreOffertId) {
+                offertEnvoye = true;
+            }
+
+            if (envoi.timbreId === echange.timbreDemandeId) {
+                demandeEnvoye = true;
+            }
+        }
+
+        // Libérer le timbre offert s'il n'a pas été envoyé.
+        if (!offertEnvoye) {
+            await tx.timbre.updateMany({
                 where: {
                     id: echange.timbreOffertId,
+                    statut: {
+                        in: ["RESERVE", "EN_ECHANGE"],
+                    },
                 },
                 data: {
                     statut: "DISPONIBLE",
-                },
-            });
-
-            return await tx.echange.update({
-                where: {
-                    id: identif,
-                },
-                data: {
-                    etape: EtapeEchange.ANNULE,
-
-                    motifAnnulation: motifannulation,
-
                     version: {
                         increment: 1,
                     },
                 },
             });
-        },
-    );
+        }
+
+        // Vérifier les autres propositions concernant le timbre demandé.
+        const autreProposition = await tx.echange.findFirst({
+            where: {
+                timbreDemandeId: echange.timbreDemandeId,
+                etape: EtapeEchange.EN_ATTENTE,
+                id: {
+                    not: identif,
+                },
+            },
+        });
+
+        // Libérer le timbre demandé uniquement s'il n'a pas été envoyé
+        // et qu'aucune autre proposition n'existe.
+        if (!demandeEnvoye && !autreProposition) {
+            await tx.timbre.updateMany({
+                where: {
+                    id: echange.timbreDemandeId,
+                    statut: {
+                        in: ["EN_ATTENTE", "EN_ECHANGE"],
+                    },
+                },
+                data: {
+                    statut: "DISPONIBLE",
+                    version: {
+                        increment: 1,
+                    },
+                },
+            });
+        }
+
+        return await tx.echange.update({
+            where: {
+                id: identif,
+            },
+            data: {
+                etape: EtapeEchange.ANNULE,
+                motifAnnulation: motifannulation.trim(),
+                version: {
+                    increment: 1,
+                },
+            },
+        });
+    });
 
     return {
         code: 200,
@@ -154,4 +226,3 @@ export default defineEventHandler(async (event) => {
         details: echangeMisAJour,
     };
 });
-

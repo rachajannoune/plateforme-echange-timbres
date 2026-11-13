@@ -2,7 +2,7 @@ import { lireSession, supprimerSession } from "../../utils/session";
 
 export default defineEventHandler(async (event) => {
 
-    const session = lireSession(event);
+    const session = await lireSession(event);
 
     if (!session) {
         setResponseStatus(event, 401);
@@ -14,7 +14,7 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    supprimerSession(event);
+    await supprimerSession(event);
 
     return {
         code: 200,

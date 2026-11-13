@@ -1,22 +1,29 @@
 import { prisma } from "../../utils/db";
-import { lireSession } from "../../utils/session";
+import {  exigerUtilisateurActif } from "../../utils/session";
 
 export default defineEventHandler(async (event) => {
-    const session = lireSession(event);
+    const utilisateur = await exigerUtilisateurActif(event);
 
-    if (!session) {
-        setResponseStatus(event, 401);
+    if (utilisateur.role !== "MEMBRE") {
+        setResponseStatus(event, 403);
 
         return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
+            code: 403,
+            message: "Action réservée aux membres.",
             details: null,
         };
     }
 
+    const session = utilisateur.id;
+
     const body = await readBody(event);
 
-    if (!body.timbreOffertId || !body.timbreDemandeId) {
+    if (
+        !body ||
+        typeof body !== "object" ||
+        typeof body.timbreOffertId !== "string" ||
+        typeof body.timbreDemandeId !== "string"
+    ) {
         setResponseStatus(event, 400);
 
         return {
@@ -130,7 +137,26 @@ export default defineEventHandler(async (event) => {
 
     }
     const createProposition = await prisma.$transaction(async (tx) => {
+        const reservation = await tx.timbre.updateMany({
+            where: {
+                id: body.timbreOffertId,
+                proprietaireId: session,
+                statut: {
+                    in: ["DISPONIBLE", "EN_ATTENTE"],
+                },
+            },
+            data: {
+                statut: "RESERVE",
+                version: { increment: 1 },
+            },
+        });
 
+        if (reservation.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Le timbre offert n'est plus disponible.",
+            });
+        }
         const proposition = await tx.echange.create({
             data: {
                 proposantId: session,
@@ -146,15 +172,6 @@ export default defineEventHandler(async (event) => {
             },
             data: {
                 statut: "EN_ATTENTE",
-            },
-        });
-
-        await tx.timbre.update({
-            where: {
-                id: body.timbreOffertId,
-            },
-            data: {
-                statut: "RESERVE",
             },
         });
 

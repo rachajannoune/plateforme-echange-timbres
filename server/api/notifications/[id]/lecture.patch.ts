@@ -1,7 +1,9 @@
 import { prisma } from "../../../utils/db";
-import { lireSession } from "../../../utils/session";
+import { exigerUtilisateurActif } from "../../../utils/session";
 
 export default defineEventHandler(async (event) => {
+    const utilisateur = await exigerUtilisateurActif(event);
+
     const identif = getRouterParam(event, "id");
 
     if (!identif) {
@@ -9,7 +11,7 @@ export default defineEventHandler(async (event) => {
 
         return {
             code: 400,
-            message: "Identifiant de l'échange manquant.",
+            message: "Identifiant de la notification manquant.",
             details: null,
         };
     }
@@ -24,38 +26,11 @@ export default defineEventHandler(async (event) => {
 
         return {
             code: 400,
-            message: "Identifiant de l'échange invalide.",
+            message: "Identifiant de la notification invalide.",
             details: null,
         };
     }
 
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
     const notification = await prisma.notification.findUnique({
         where: {
             id: identif,
@@ -70,7 +45,7 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
-    if (session !== notification.utilisateurId) {
+    if (utilisateur.id !== notification.utilisateurId) {
         setResponseStatus(event, 403
         );
 
@@ -89,12 +64,30 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
-    const notificationMiseAJour = await prisma.notification.update({
+    const modification = await prisma.notification.updateMany({
         where: {
             id: identif,
+            utilisateurId: utilisateur.id,
+            lue: false,
         },
         data: {
             lue: true,
+        },
+    });
+
+    if (modification.count !== 1) {
+        setResponseStatus(event, 409);
+
+        return {
+            code: 409,
+            message: "Cette notification a déjà été marquée comme lue.",
+            details: null,
+        };
+    }
+
+    const notificationMiseAJour = await prisma.notification.findUnique({
+        where: {
+            id: identif,
         },
     });
     return {

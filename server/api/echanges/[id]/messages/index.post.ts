@@ -1,13 +1,17 @@
 import { EtapeEchange } from "~/generated/prisma/enums";
 import { prisma } from "../../../../utils/db";
-import { lireSession } from "../../../../utils/session";
+import { exigerUtilisateurActif } from "../../../../utils/session";
 
 export default defineEventHandler(async (event) => {
+    const utilisateur = await exigerUtilisateurActif(event);
+
     const identif = getRouterParam(event, "id");
     const body = await readBody(event);
 
-    const contenu = body.contenu?.trim();
-
+    const contenu =
+        typeof body?.contenu === "string"
+            ? body.contenu.trim()
+            : "";
     if (!identif) {
         setResponseStatus(event, 400);
 
@@ -33,34 +37,6 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
     const echange = await prisma.echange.findUnique({
         where: {
             id: identif,
@@ -78,8 +54,8 @@ export default defineEventHandler(async (event) => {
     }
 
     if (
-        session !== echange.proposantId &&
-        session !== echange.destinataireId
+        utilisateur.id !== echange.proposantId &&
+        utilisateur.id !== echange.destinataireId
     ) {
         setResponseStatus(event, 403);
 
@@ -113,27 +89,58 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const messageCree = await prisma.message.create({
-        data: {
-            echangeId: identif,
-            auteurId: session,
-            contenu,
-        },
-    });
+    const messageCree = await prisma.$transaction(async (tx) => {
 
-    const notifier =
-        session === echange.proposantId
-            ? echange.destinataireId
-            : echange.proposantId;
+        const verification = await tx.echange.updateMany({
+            where: {
+                id: identif,
+                etape: {
+                    notIn: [
+                        EtapeEchange.CONCLU,
+                        EtapeEchange.ANNULE,
+                        EtapeEchange.REJETE,
+                        EtapeEchange.REFUSE,
+                    ],
+                },
+            },
+            data: {
+                version: {
+                    increment: 1,
+                },
+            },
+        });
 
-    await prisma.notification.create({
-        data: {
-            utilisateurId: notifier,
-            echangeId: identif,
-            type: "MESSAGE",
-            titre: "Nouveau message reçu",
-            contenu,
-        },
+        if (verification.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Cette conversation est en lecture seule.",
+            });
+        }
+
+        const message = await tx.message.create({
+            data: {
+                echangeId: identif,
+                auteurId: utilisateur.id,
+                contenu,
+            },
+        });
+
+        const notifier =
+            utilisateur.id === echange.proposantId
+                ? echange.destinataireId
+                : echange.proposantId;
+
+        await tx.notification.create({
+            data: {
+                utilisateurId: notifier,
+                echangeId: identif,
+                type: "MESSAGE",
+                titre: "Nouveau message reçu",
+                contenu,
+            },
+        });
+
+        return message;
     });
 
     setResponseStatus(event, 201);

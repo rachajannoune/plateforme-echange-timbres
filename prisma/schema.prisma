@@ -93,6 +93,20 @@ model Utilisateur {
   echangesRecus        Echange[]         @relation("EchangesRecus")
   messages             Message[]
   notifications        Notification[]
+  sessions             Session[]
+}
+
+model Session {
+  id             String   @id @default(uuid()) @db.Uuid
+  jetonHash      String   @unique @db.Char(64)
+  utilisateurId  String   @db.Uuid
+  dateCreation   DateTime @default(now())
+  dateExpiration DateTime
+
+  utilisateur Utilisateur @relation(fields: [utilisateurId], references: [id], onDelete: Cascade)
+
+  @@index([utilisateurId])
+  @@index([dateExpiration])
 }
 
 model Timbre {

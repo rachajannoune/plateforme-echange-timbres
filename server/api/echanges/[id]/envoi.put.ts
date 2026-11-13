@@ -1,5 +1,5 @@
 import { prisma } from "../../../utils/db";
-import { lireSession } from "../../../utils/session";
+import { exigerUtilisateurActif } from "../../../utils/session";
 
 export default defineEventHandler(async (event) => {
 
@@ -28,18 +28,18 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const session = lireSession(event);
+    const utilisateur = await exigerUtilisateurActif(event);
+    const session = utilisateur.id;
 
-    if (!session) {
-        setResponseStatus(event, 401);
+    if (utilisateur.role !== "MEMBRE") {
+        setResponseStatus(event, 403);
 
         return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
+            code: 403,
+            message: "Action réservée aux membres.",
             details: null,
         };
     }
-
     const findEchange = await prisma.echange.findUnique({
         where: {
             id: identif,
@@ -81,7 +81,7 @@ export default defineEventHandler(async (event) => {
 
     const body = await readBody(event);
 
-    if (
+    if (!body ||
         typeof body.numeroSuivi !== "string" ||
         body.numeroSuivi.trim() === ""
     ) {
@@ -99,25 +99,43 @@ export default defineEventHandler(async (event) => {
             ? findEchange.timbreOffertId
             : findEchange.timbreDemandeId;
 
-    const envoiExistant = await prisma.envoi.findFirst({
-        where: {
-            echangeId: identif,
-            timbreId: timbreId,
-            sens: "ALLER",
-        },
-    });
-
-    if (envoiExistant) {
-        setResponseStatus(event, 409);
-
-        return {
-            code: 409,
-            message: "L'envoi de ce timbre a déjà été déclaré.",
-            details: null,
-        };
-    }
-
     const resultat = await prisma.$transaction(async (tx) => {
+        
+        // Empêcher deux déclarations de modifier le même échange simultanément.
+        const verification = await tx.echange.updateMany({
+            where: {
+                id: identif,
+                etape: "ACCEPTE",
+            },
+            data: {
+                version: {
+                    increment: 1,
+                },
+            },
+        });
+
+        if (verification.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "L'échange ne permet plus de déclarer un envoi.",
+            });
+        }
+
+        // Vérifier si ce membre a déjà déclaré son colis.
+        const envoiExistant = await tx.envoi.findFirst({
+            where: {
+                echangeId: identif,
+                timbreId: timbreId,
+                sens: "ALLER",
+            },
+        });
+
+        if (envoiExistant) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "L'envoi de ce timbre a déjà été déclaré.",
+            });
+        }
 
         const nouvelEnvoi = await tx.envoi.create({
             data: {
@@ -138,9 +156,10 @@ export default defineEventHandler(async (event) => {
 
         if (nombreEnvoisAller === 2) {
 
-            await tx.echange.update({
+            const miseAjour = await tx.echange.updateMany({
                 where: {
                     id: identif,
+                    etape: "ACCEPTE"
                 },
                 data: {
                     etape: "TIMBRES_ENVOYES",
@@ -149,7 +168,12 @@ export default defineEventHandler(async (event) => {
                     },
                 },
             });
-
+            if (miseAjour.count !== 1) {
+                throw createError({
+                    statusCode: 409,
+                    statusMessage: "L'échange ne permet plus de déclarer cet envoi.",
+                });
+            }
             await tx.notification.create({
                 data: {
                     utilisateurId: findEchange.proposantId,

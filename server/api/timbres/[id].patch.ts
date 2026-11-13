@@ -1,7 +1,8 @@
 import { prisma } from "../../utils/db";
-import { lireSession } from "../../utils/session";
+import { exigerUtilisateurActif } from "../../utils/session";
 
 export default defineEventHandler(async (event) => {
+    const utilisateur = await exigerUtilisateurActif(event);
 
     const identif = getRouterParam(event, "id");
 
@@ -28,19 +29,6 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-
     const timbre = await prisma.timbre.findUnique({
         where: {
             id: identif,
@@ -57,7 +45,7 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    if (timbre.proprietaireId !== session) {
+    if (timbre.proprietaireId !== utilisateur.id) {
         setResponseStatus(event, 403);
 
         return {
@@ -204,9 +192,33 @@ export default defineEventHandler(async (event) => {
             details: null,
         };
     }
-    const updateTimbre = await prisma.timbre.update({
+    if (
+        body.titre === undefined &&
+        body.theme === undefined &&
+        body.pays === undefined &&
+        body.annee === undefined &&
+        body.valeurFaciale === undefined &&
+        body.coteEstimee === undefined &&
+        body.couleurImpression === undefined &&
+        body.rarete === undefined &&
+        body.etat === undefined &&
+        body.referenceCatalogue === undefined
+    ) {
+        setResponseStatus(event, 400);
+
+        return {
+            code: 400,
+            message: "Aucun champ à modifier n'a été fourni.",
+            details: null,
+        };
+    }
+    const updateTimbre = await prisma.timbre.updateMany({
         where: {
             id: identif,
+            proprietaireId: utilisateur.id,
+            statut: {
+                in: ["DISPONIBLE", "SUSPENDU"],
+            }
         },
         data: {
             titre: body.titre,
@@ -230,10 +242,25 @@ export default defineEventHandler(async (event) => {
             },
         },
     });
+    if (updateTimbre.count !== 1) {
+        setResponseStatus(event, 409);
+
+        return {
+            code: 409,
+            message: "Le timbre ne peut plus être modifié.",
+            details: null,
+        };
+    }
+
+    const timbreModifie = await prisma.timbre.findUnique({
+        where: {
+            id: identif,
+        },
+    });
     return {
         code: 200,
         message: "Timbre modifié avec succès.",
-        details: updateTimbre,
+        details: timbreModifie,
     };
 
 });

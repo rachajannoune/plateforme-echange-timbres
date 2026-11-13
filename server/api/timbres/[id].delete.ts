@@ -1,9 +1,10 @@
 import { prisma } from "../../utils/db";
-import { lireSession } from "../../utils/session";
+import { exigerUtilisateurActif } from "../../utils/session";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 export default defineEventHandler(async (event) => {
+    const utilisateur = await exigerUtilisateurActif(event);
 
     const identif = getRouterParam(event, "id");
 
@@ -26,18 +27,6 @@ export default defineEventHandler(async (event) => {
         return {
             code: 400,
             message: "Identifiant du timbre invalide.",
-            details: null,
-        };
-    }
-
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
             details: null,
         };
     }
@@ -65,7 +54,7 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    if (timbre.proprietaireId !== session) {
+    if (timbre.proprietaireId !== utilisateur.id) {
         setResponseStatus(event, 403);
 
         return {
@@ -85,7 +74,73 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    for (const photo of timbre.photos) {
+    const photos = await prisma.$transaction(async (tx) => {
+
+        const verification = await tx.timbre.updateMany({
+            where: {
+                id: identif,
+                proprietaireId: utilisateur.id,
+                statut: "DISPONIBLE",
+            },
+            data: {
+                version: {
+                    increment: 1,
+                },
+            },
+        });
+
+        if (verification.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Le timbre ne peut plus être supprimé.",
+            });
+        }
+
+        const echangeExistant = await tx.echange.findFirst({
+            where: {
+                OR: [
+                    {
+                        timbreOffertId: identif,
+                    },
+                    {
+                        timbreDemandeId: identif,
+                    },
+                ],
+            },
+        });
+
+        if (echangeExistant) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Ce timbre possède un historique d'échange et ne peut pas être supprimé.",
+            });
+        }
+
+        await tx.photoTimbre.deleteMany({
+            where: {
+                timbreId: identif,
+            },
+        });
+
+        const suppression = await tx.timbre.deleteMany({
+            where: {
+                id: identif,
+                proprietaireId: utilisateur.id,
+                statut: "DISPONIBLE",
+            },
+        });
+
+        if (suppression.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Le timbre ne peut plus être supprimé.",
+            });
+        }
+
+        return timbre.photos;
+    });
+
+    for (const photo of photos) {
 
         const cheminFichier = join(
             process.cwd(),
@@ -99,18 +154,6 @@ export default defineEventHandler(async (event) => {
             // Le fichier peut déjà ne plus exister.
         }
     }
-
-    await prisma.photoTimbre.deleteMany({
-        where: {
-            timbreId: identif,
-        },
-    });
-
-    await prisma.timbre.delete({
-        where: {
-            id: identif,
-        },
-    });
 
     return {
         code: 200,

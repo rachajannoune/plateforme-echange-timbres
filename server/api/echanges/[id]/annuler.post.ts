@@ -1,5 +1,5 @@
 import { prisma } from "../../../utils/db";
-import { lireSession } from "../../../utils/session";
+import { exigerUtilisateurActif } from "../../../utils/session";
 
 export default defineEventHandler(async (event) => {
 
@@ -28,17 +28,19 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const session = lireSession(event);
+    const utilisateur = await exigerUtilisateurActif(event);
+    const session = utilisateur.id;
 
-    if (!session) {
-        setResponseStatus(event, 401);
+    if (utilisateur.role !== "MEMBRE") {
+        setResponseStatus(event, 403);
 
         return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
+            code: 403,
+            message: "Action réservée aux membres.",
             details: null,
         };
     }
+
 
     const findEchange = await prisma.echange.findUnique({
         where: {
@@ -78,9 +80,11 @@ export default defineEventHandler(async (event) => {
 
     const resultat = await prisma.$transaction(async (tx) => {
 
-        const echangeAnnule = await tx.echange.update({
+        const annulation = await tx.echange.updateMany({
             where: {
                 id: identif,
+                proposantId: session,
+                etape: "EN_ATTENTE"
             },
             data: {
                 etape: "ANNULE",
@@ -89,10 +93,22 @@ export default defineEventHandler(async (event) => {
                 },
             },
         });
+        if (annulation.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Cette proposition ne peut plus être annulée.",
+            });
+        }
+        const echangeAnnule = await tx.echange.findUniqueOrThrow({
+            where: {
+                id: identif,
+            },
+        });
 
-        await tx.timbre.update({
+        await tx.timbre.updateMany({
             where: {
                 id: findEchange.timbreOffertId,
+                statut:"RESERVE"
             },
             data: {
                 statut: "DISPONIBLE",
@@ -114,9 +130,10 @@ export default defineEventHandler(async (event) => {
         });
 
         if (!autreProposition) {
-            await tx.timbre.update({
+            await tx.timbre.updateMany({
                 where: {
                     id: findEchange.timbreDemandeId,
+                    statut:"EN_ATTENTE"
                 },
                 data: {
                     statut: "DISPONIBLE",

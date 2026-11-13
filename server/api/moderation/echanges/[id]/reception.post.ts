@@ -1,7 +1,8 @@
 import { prisma } from "../../../../utils/db";
-import { lireSession } from "../../../../utils/session";
+import { exigerUtilisateurActif } from "../../../../utils/session";
 
 export default defineEventHandler(async (event) => {
+
     const identif = getRouterParam(event, "id");
 
     if (!identif) {
@@ -14,12 +15,10 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const uuidValide =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-            identif,
-        );
+    const uuidRegex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-    if (!uuidValide) {
+    if (!uuidRegex.test(identif)) {
         setResponseStatus(event, 400);
 
         return {
@@ -29,33 +28,7 @@ export default defineEventHandler(async (event) => {
         };
     }
 
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
-
-    const utilisateur = await prisma.utilisateur.findUnique({
-        where: {
-            id: session,
-        },
-    });
-
-    if (!utilisateur) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
+    const utilisateur = await exigerUtilisateurActif(event);
 
     if (utilisateur.role !== "MODERATEUR") {
         setResponseStatus(event, 403);
@@ -63,6 +36,22 @@ export default defineEventHandler(async (event) => {
         return {
             code: 403,
             message: "Vous n'êtes pas autorisé à accéder à cette ressource.",
+            details: null,
+        };
+    }
+
+    const body = await readBody(event);
+
+    if (
+        !body ||
+        typeof body.timbreId !== "string" ||
+        !uuidRegex.test(body.timbreId)
+    ) {
+        setResponseStatus(event, 400);
+
+        return {
+            code: 400,
+            message: "Identifiant du timbre invalide ou manquant.",
             details: null,
         };
     }
@@ -84,47 +73,87 @@ export default defineEventHandler(async (event) => {
     }
 
     if (echange.etape !== "TIMBRES_ENVOYES") {
-        setResponseStatus(event, 400);
+        setResponseStatus(event, 409);
 
         return {
-            code: 400,
+            code: 409,
             message: "Cet échange ne peut pas être réceptionné.",
             details: null,
         };
     }
 
-    const envoisAller = await prisma.envoi.findMany({
-        where: {
-            echangeId: identif,
-            sens: "ALLER",
-        },
-    });
-
-    if (envoisAller.length === 0) {
+    if (
+        body.timbreId !== echange.timbreOffertId &&
+        body.timbreId !== echange.timbreDemandeId
+    ) {
         setResponseStatus(event, 400);
 
         return {
             code: 400,
-            message: "Aucun envoi à réceptionner pour cet échange.",
+            message: "Ce timbre ne fait pas partie de cet échange.",
             details: null,
         };
     }
 
-    const echangeMisAJour = await prisma.$transaction(
-        async (tx) => {
-            await tx.envoi.updateMany({
-                where: {
-                    echangeId: identif,
-                    sens: "ALLER",
-                },
-                data: {
-                    dateReception: new Date(),
-                },
-            });
+    const resultat = await prisma.$transaction(async (tx) => {
 
-            return await tx.echange.update({
+        // Synchroniser les réceptions de cet échange.
+        const verification = await tx.echange.updateMany({
+            where: {
+                id: identif,
+                etape: "TIMBRES_ENVOYES",
+            },
+            data: {
+                version: {
+                    increment: 1,
+                },
+            },
+        });
+
+        if (verification.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Cet échange ne peut plus être réceptionné.",
+            });
+        }
+
+        // Enregistrer uniquement le colis arrivé.
+        const reception = await tx.envoi.updateMany({
+            where: {
+                echangeId: identif,
+                timbreId: body.timbreId,
+                sens: "ALLER",
+                dateReception: null,
+            },
+            data: {
+                dateReception: new Date(),
+            },
+        });
+
+        if (reception.count !== 1) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: "Ce colis est introuvable ou déjà réceptionné.",
+            });
+        }
+
+        // Vérifier si les deux colis ont été reçus.
+        const nombreColisRecus = await tx.envoi.count({
+            where: {
+                echangeId: identif,
+                sens: "ALLER",
+                dateReception: {
+                    not: null,
+                },
+            },
+        });
+
+        if (nombreColisRecus === 2) {
+
+            const miseAJour = await tx.echange.updateMany({
                 where: {
                     id: identif,
+                    etape: "TIMBRES_ENVOYES",
                 },
                 data: {
                     etape: "TIMBRES_RECUS",
@@ -133,12 +162,25 @@ export default defineEventHandler(async (event) => {
                     },
                 },
             });
-        },
-    );
+
+            if (miseAJour.count !== 1) {
+                throw createError({
+                    statusCode: 409,
+                    statusMessage: "L'échange ne peut plus passer à l'expertise.",
+                });
+            }
+        }
+
+        return await tx.echange.findUniqueOrThrow({
+            where: {
+                id: identif,
+            },
+        });
+    });
 
     return {
         code: 200,
         message: "Réception enregistrée avec succès.",
-        details: echangeMisAJour,
+        details: resultat,
     };
 });

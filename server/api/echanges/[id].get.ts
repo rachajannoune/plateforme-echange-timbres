@@ -1,8 +1,8 @@
 import { prisma } from "../../utils/db";
-import { lireSession } from "../../utils/session";
+import { exigerUtilisateurActif } from "../../utils/session";
 
 export default defineEventHandler(async (event) => {
-
+    const utilisateur = await exigerUtilisateurActif(event);
     const identif = getRouterParam(event, "id");
 
     if (!identif) {
@@ -24,18 +24,6 @@ export default defineEventHandler(async (event) => {
         return {
             code: 400,
             message: "Identifiant de l'échange invalide.",
-            details: null,
-        };
-    }
-
-    const session = lireSession(event);
-
-    if (!session) {
-        setResponseStatus(event, 401);
-
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
             details: null,
         };
     }
@@ -112,8 +100,8 @@ export default defineEventHandler(async (event) => {
     }
 
     if (
-        echange.proposantId !== session &&
-        echange.destinataireId !== session
+        echange.proposantId !== utilisateur.id &&
+        echange.destinataireId !== utilisateur.id
     ) {
         setResponseStatus(event, 403);
 

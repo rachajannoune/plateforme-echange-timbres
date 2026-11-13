@@ -1,5 +1,5 @@
 import { prisma } from "../../utils/db";
-import { lireSession } from "../../utils/session";
+import { exigerUtilisateurActif } from "../../utils/session";
 
 export default defineEventHandler(async (event) => {
 
@@ -38,20 +38,13 @@ export default defineEventHandler(async (event) => {
         )
         ? query.statut as typeof statutsValides[number]
         : undefined;
-    const session = lireSession(event);
-    if (!session) {
-        setResponseStatus(event, 401);
 
-        return {
-            code: 401,
-            message: "Connexion expirée. Veuillez vous reconnecter.",
-            details: null,
-        };
-    }
+
+    const utilisateur = await exigerUtilisateurActif(event);
 
     const timbres = await prisma.timbre.findMany({
         where: {
-            proprietaireId: session,
+            proprietaireId: utilisateur.id,
             statut: statut
 
         },
@@ -65,13 +58,16 @@ export default defineEventHandler(async (event) => {
                 },
             },
         },
-
+        orderBy:
+        {
+            id: "desc",
+        },
         skip: skip,
         take: taille,
     });
     const total = await prisma.timbre.count({
         where: {
-            proprietaireId: session,
+            proprietaireId: utilisateur.id,
             statut: statut,
         },
     });

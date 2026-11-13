@@ -29,6 +29,25 @@ services:
 
     depends_on:
       - postgres
+  nuxt:
+    build:
+      context: .
 
+    container_name: timbres-nuxt
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+
+    depends_on:
+      - postgres
+
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+      
 volumes:
   postgres_data:

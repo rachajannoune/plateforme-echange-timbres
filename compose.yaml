@@ -31,7 +31,7 @@ services:
       - postgres
   nuxt:
     build:
-      context: .
+      context: ./backend
 
     container_name: timbres-nuxt
 
@@ -45,9 +45,28 @@ services:
       - postgres
 
     volumes:
-      - .:/app
+      - ./backend:/app
       - /app/node_modules
 
-      
+  frontend:
+    build:
+      context: ./frontend
+
+    container_name: timbres-frontend
+
+    ports:
+      - "3001:3001"
+
+    depends_on:
+      - nuxt
+
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
 volumes:
   postgres_data:
+    external: true
+    name: plateforme-echange-timbres_postgres_data
+
+

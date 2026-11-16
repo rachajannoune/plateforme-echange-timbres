@@ -1,42 +1,31 @@
-# Variables d'environnement / secrets
+# Variables d'environnement
 .env
-.env.*
-!.env.example
+**/.env
 
-# Dependencies
+# Dependances
 node_modules/
+**/node_modules/
 
 # Nuxt
 .nuxt/
+**/.nuxt/
 .output/
-.nitro/
-.data/
-dist/
+**/.output/
 
-# Cache
-.cache/
-.npm/
+# Sauvegarde Git locale
+.git-backup/
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# Sauvegardes Docker Compose locales
+compose.yaml.backup
+compose.yaml.backend-ok
 
-# Tests
-coverage/
-
-# OS
-.DS_Store
-
-# IDE
-.idea/
-
-/generated/prisma
-
-# Fichiers locaux de test
+# Fichiers de test locaux
 cookies.txt
+**/cookies.txt
 elodie.txt
 hugo.txt
 moderateur.txt
+
+# Logs
+*.log
+npm-debug.log*

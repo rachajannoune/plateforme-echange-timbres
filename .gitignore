@@ -34,3 +34,9 @@ coverage/
 .idea/
 
 /generated/prisma
+
+# Fichiers locaux de test
+cookies.txt
+elodie.txt
+hugo.txt
+moderateur.txt
